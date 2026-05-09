@@ -121,13 +121,30 @@ EOF
   udevadm control --reload-rules
 }
 
+# Print best-guess name + return 0 if a HID device is a touchpad, else return 1.
+# The HID parent's `name` file is often empty (especially on i2c-hid and on ASUS
+# composite USB devices); fall back to uevent HID_NAME and to child input names,
+# which is where libinput-style "*Touchpad*" labels actually live.
+_hid_touchpad_name() {
+  local dev=$1 n inp
+  n=$(cat "${dev}name" 2>/dev/null || true)
+  [[ "${n,,}" == *touchpad* ]] && { echo "$n"; return 0; }
+  n=$(grep -h '^HID_NAME=' "${dev}uevent" 2>/dev/null | cut -d= -f2-)
+  [[ "${n,,}" == *touchpad* ]] && { echo "$n"; return 0; }
+  for inp in "${dev}"input/input*/name; do
+    [[ -f "$inp" ]] || continue
+    n=$(cat "$inp" 2>/dev/null || true)
+    [[ "${n,,}" == *touchpad* ]] && { echo "$n"; return 0; }
+  done
+  return 1
+}
+
 fix_touchpad() {
   # HID path: rebind USB touchpad from hid-generic → hid-multitouch
   local any=0
   local dev name id drv
   for dev in /sys/bus/hid/devices/*/; do
-    name=$(cat "${dev}name" 2>/dev/null || true)
-    [[ "${name,,}" == *touchpad* ]] || continue
+    name=$(_hid_touchpad_name "$dev") || continue
     any=1
     id=$(basename "$dev")
     drv=none; [[ -L "${dev}driver" ]] && drv=$(basename "$(readlink -f "${dev}driver")")
@@ -157,7 +174,7 @@ fix_touchpad() {
     fi
   done
 
-  [[ $any -eq 0 ]] && warn "no touchpad found"
+  if [[ $any -eq 0 ]]; then warn "no touchpad found"; fi
 }
 
 setup() {
@@ -233,8 +250,7 @@ status() {
   local tp_found=0
   local dev name drv
   for dev in /sys/bus/hid/devices/*/; do
-    name=$(cat "${dev}name" 2>/dev/null || true)
-    [[ "${name,,}" == *touchpad* ]] || continue
+    name=$(_hid_touchpad_name "$dev") || continue
     tp_found=1
     drv=none; [[ -L "${dev}driver" ]] && drv=$(basename "$(readlink -f "${dev}driver")")
     case "$drv" in
