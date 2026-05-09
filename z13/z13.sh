@@ -19,121 +19,64 @@ fail() { printf '%s[!!]%s %s\n' "$RED" "$RST" "$*"; ((++FAIL)); }
 
 setup_rog_key() {
   local real_user="${SUDO_USER:-}"
-  local aur_helper=""
-  for h in yay paru pikaur; do command -v "$h" &>/dev/null && { aur_helper="$h"; break; }; done
+  [[ -n "$real_user" ]] || { warn "SUDO_USER unset — ROG key setup skipped"; return; }
 
-  for pkg in asusctl rog-control-center; do
-    pacman -Qi "$pkg" &>/dev/null && continue
-    if [[ -n "$aur_helper" && -n "$real_user" ]]; then
-      sudo -u "$real_user" "$aur_helper" -S --noconfirm --needed "$pkg" && ok "$pkg" || fail "$pkg"
+  if ! command -v z13ctl &>/dev/null; then
+    warn "z13ctl not found — ROG key setup skipped"
+    return
+  fi
+
+  local rules=/etc/udev/rules.d/99-z13ctl.rules
+  local svc=/etc/systemd/system/z13ctl-perms.service
+  local dropin_dir=/etc/systemd/system/z13ctl-perms.service.d
+  local dropin=${dropin_dir}/ryzen-smu.conf
+  local rules_changed=0 perms_changed=0
+
+  # z13ctl setup writes 99-z13ctl.rules granting the group access to all ASUS
+  # devices (HID RGB, Armoury Crate button, platform-profile, battery threshold,
+  # asus-armoury attrs, fan curve, TDP) and installs z13ctl-perms.service for
+  # the battery attribute that appears late in the asus_nb_wmi probe sequence.
+  if [[ ! -f "$rules" ]] || ! grep -q 'GROUP="input"' "$rules"; then
+    if z13ctl setup --group input; then
+      ok "z13ctl udev rules installed/updated"
+      rules_changed=1
     else
-      warn "$pkg: install from AUR (yay/paru) then re-run"
-    fi
-  done
-
-  mkdir -p /etc/asusd
-  if pacman -Qi asusctl &>/dev/null; then
-    systemctl enable --now asusd.service && ok "asusd" \
-      || warn "asusd failed — evdev daemon will handle ROG key"
-    local cfg=/etc/asusd/asusd.ron
-    if [[ -f "$cfg" ]] && ! grep -q 'rog_key_action.*OpenRogControlCenter' "$cfg"; then
-      cp -a "$cfg" "${cfg}.bak.$(date +%Y%m%d-%H%M%S)"
-      sed -i 's/rog_key_action:[[:space:]]*[A-Za-z]*/rog_key_action: OpenRogControlCenter/' "$cfg" \
-        && ok "ROG key → rog-control-center (asusd)" \
-        || warn "could not patch $cfg — set ROG key in rog-control-center GUI"
-      systemctl restart asusd.service 2>/dev/null || true
+      fail "z13ctl setup"
     fi
   fi
 
-  # Evdev daemon: grabs the ROG key input device directly.
-  # Exits cleanly if asusd already owns the grab, so both can coexist.
-  [[ -n "$real_user" ]] || { warn "SUDO_USER unset — evdev daemon skipped"; return; }
-  local uid; uid=$(id -u "$real_user")
-  local home; home=$(getent passwd "$real_user" | cut -d: -f6)
-
-  if ! pacman -Qi python-evdev &>/dev/null; then
-    pacman -S --noconfirm --needed python-evdev && ok "python-evdev" || { fail "python-evdev"; return; }
+  # Safety: z13ctl setup may emit the perms service with the wrong group.
+  if [[ -f "$svc" ]] && grep -q 'chgrp users' "$svc"; then
+    sed -i 's/chgrp users/chgrp input/g' "$svc"
+    ok "z13ctl-perms.service: corrected group users→input"
+    perms_changed=1
   fi
 
-  cat >/etc/udev/rules.d/99-asus-rog-input.rules <<'EOF'
-SUBSYSTEM=="input", ATTRS{name}=="*ASUS*", GROUP="input", MODE="0660"
-SUBSYSTEM=="input", ATTRS{name}=="*Asus*", GROUP="input", MODE="0660"
-EOF
-  udevadm control --reload
-  usermod -aG input "$real_user" && ok "$real_user → input group (re-login required)"
-
-  mkdir -p /usr/local/lib/z13
-  cat >/usr/local/lib/z13/rog-key-daemon <<'PYEOF'
-#!/usr/bin/env python3
-import evdev, glob, os, subprocess, sys, time
-
-KEY = evdev.ecodes.KEY_PROG3  # asus-nb-wmi maps the ROG/Armoury Crate key here
-
-def find_dev():
-    for p in evdev.list_devices():
-        try:
-            d = evdev.InputDevice(p)
-            if KEY in d.capabilities().get(evdev.ecodes.EV_KEY, []):
-                if any(k in d.name.lower() for k in ('asus', 'rog', 'wmi', 'acpi')):
-                    return d
-        except Exception:
-            pass
-    return None
-
-def launch_env():
-    runtime = os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}')
-    env = {**os.environ, 'XDG_RUNTIME_DIR': runtime,
-           'DBUS_SESSION_BUS_ADDRESS': f'unix:path={runtime}/bus'}
-    # Prefer Wayland socket; fall back to X11
-    sockets = [f for f in glob.glob(f'{runtime}/wayland-*') if not f.endswith('.lock')]
-    if sockets:
-        env['WAYLAND_DISPLAY'] = os.path.basename(sockets[0])
-        env.pop('DISPLAY', None)
-    else:
-        env['DISPLAY'] = os.environ.get('DISPLAY', ':0')
-    return env
-
-while True:
-    while True:
-        dev = find_dev()
-        if dev:
-            break
-        time.sleep(2)
-
-    try:
-        dev.grab()
-    except OSError:
-        sys.exit(0)  # asusd already owns the device; nothing to do
-
-    env = launch_env()
-    try:
-        for ev in dev.read_loop():
-            if ev.type == evdev.ecodes.EV_KEY and ev.code == KEY and ev.value == 1:
-                subprocess.Popen(['rog-control-center'], env=env)
-    except OSError:
-        pass  # device lost (e.g. suspend/resume); re-discover and re-grab
-PYEOF
-  chmod +x /usr/local/lib/z13/rog-key-daemon
-
-  local svc="$home/.config/systemd/user/rog-key-daemon.service"
-  local wants="$home/.config/systemd/user/graphical-session.target.wants"
-  mkdir -p "$wants"
-  cat >"$svc" <<EOF
-[Unit]
-Description=ROG key → rog-control-center
-After=graphical-session.target
-
+  # Move ryzen_smu perms into a drop-in so future z13ctl setup runs can't erase them.
+  if [[ ! -f "$dropin" ]]; then
+    mkdir -p "$dropin_dir"
+    cat >"$dropin" <<'EOF'
 [Service]
-ExecStart=/usr/local/lib/z13/rog-key-daemon
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=graphical-session.target
+ExecStart=/bin/sh -c 'for f in /sys/kernel/ryzen_smu_drv/smu_args /sys/kernel/ryzen_smu_drv/mp1_smu_cmd /sys/kernel/ryzen_smu_drv/rsmu_cmd; do [ -e "$$f" ] && chgrp input "$$f" && chmod g+w "$$f" || true; done'
 EOF
-  ln -sf "$svc" "$wants/rog-key-daemon.service"
-  chown -R "$real_user:$real_user" "$home/.config/systemd"
-  ok "rog-key-daemon user service enabled"
+    ok "z13ctl-perms: ryzen_smu drop-in installed"
+    perms_changed=1
+  fi
+
+  if [[ $perms_changed -eq 1 ]]; then
+    systemctl daemon-reload
+    systemctl restart z13ctl-perms.service && ok "z13ctl-perms.service restarted"
+  fi
+
+  if [[ $rules_changed -eq 1 ]]; then
+    udevadm control --reload-rules
+    udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+    ok "udev rules reloaded"
+  fi
+
+  if ! id -nG "$real_user" | grep -qw input; then
+    usermod -aG input "$real_user" && ok "$real_user → input group (re-login required)"
+  fi
 }
 
 setup() {
@@ -150,14 +93,19 @@ setup() {
   done
 
   local rule=/etc/udev/rules.d/99-amdgpu-dpm.rules
-  [[ -f "$rule" ]] || cat >"$rule" <<'EOF'
+  if [[ ! -f "$rule" ]]; then
+    cat >"$rule" <<'EOF'
 ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card*", ATTR{device/power_dpm_force_performance_level}="auto"
 EOF
+    ok "amdgpu DPM udev rule created"
+  fi
 
   setup_rog_key
 }
 
 optimize() {
+  setup_rog_key
+
   local TTM=5242880  # 20 GB iGPU VRAM cap
 
   local entry=""
@@ -186,10 +134,6 @@ optimize() {
     systemctl enable --now systemd-oomd.service && ok "systemd-oomd enabled"
   }
 
-  pacman -Qi asusctl &>/dev/null && {
-    systemctl is-active --quiet asusd || { systemctl start asusd && ok "asusd started"; }
-  }
-
   local conf=/etc/sysctl.d/99-gz302-32gb.conf
   if ! grep -q 'watermark_scale_factor *= *100' "$conf" 2>/dev/null; then
     printf 'vm.watermark_scale_factor = 100\n' >"$conf"
@@ -198,16 +142,19 @@ optimize() {
 
   # Verify
   local pages; pages=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
-  [[ $pages == "$TTM" ]] && ok "ttm.pages_limit=$TTM" || warn "ttm.pages_limit=$pages (reboot pending?)"
-  [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]] \
-    && ok "networkd-wait-online masked" || fail "networkd-wait-online not masked"
-  systemctl is-active --quiet systemd-oomd && ok "systemd-oomd active" || fail "systemd-oomd not active"
+  local pool;  pool=$(cat /sys/module/ttm/parameters/page_pool_size 2>/dev/null || echo 0)
+  if [[ $pages == "$TTM" ]]; then ok "ttm.pages_limit=$TTM"; else warn "ttm.pages_limit=$pages (reboot pending?)"; fi
+  if [[ $pool  == "$TTM" ]]; then ok "ttm.page_pool_size=$TTM"; else warn "ttm.page_pool_size=$pool (reboot pending?)"; fi
+  if [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]]; then
+    ok "networkd-wait-online masked"
+  else
+    fail "networkd-wait-online not masked"
+  fi
+  if systemctl is-active --quiet systemd-oomd; then ok "systemd-oomd active"; else fail "systemd-oomd not active"; fi
   local wmsf; wmsf=$(sysctl -n vm.watermark_scale_factor)
-  [[ $wmsf == 100 ]] && ok "vm.watermark_scale_factor=100" || fail "vm.watermark_scale_factor=$wmsf"
+  if [[ $wmsf == 100 ]]; then ok "vm.watermark_scale_factor=100"; else fail "vm.watermark_scale_factor=$wmsf"; fi
 
-  pacman -Qi asusctl &>/dev/null && {
-    systemctl is-active --quiet asusd && ok "asusd active" || warn "asusd not active (evdev daemon covers ROG key)"
-  }
+  [[ $FAIL -eq 0 ]] && ok "all checks passed" || true
 }
 
 case "${1:-}" in
