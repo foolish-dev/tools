@@ -5,6 +5,7 @@
 #   z13               setup, then reboot; run 'z13 --optimize' after
 #   z13 --optimize    post-reboot optimization
 #   z13 --no-reboot   setup + optimize inline (testing)
+#   z13 --status      verify current state without making changes
 
 set -euo pipefail
 
@@ -17,7 +18,14 @@ fail() { printf '%s[!!]%s %s\n' "$RED" "$RST" "$*"; ((++FAIL)); }
 
 [[ $EUID -ne 0 ]] && exec sudo -E "$0" "$@"
 
+readonly TTM=5242880  # 20 GiB iGPU VRAM cap (pages × 4 KiB)
+
+_ROG_KEY_DONE=0
+
 setup_rog_key() {
+  if [[ $_ROG_KEY_DONE -eq 1 ]]; then return; fi
+  _ROG_KEY_DONE=1
+
   local real_user="${SUDO_USER:-}"
   [[ -n "$real_user" ]] || { warn "SUDO_USER unset — ROG key setup skipped"; return; }
 
@@ -104,27 +112,83 @@ EOF
   setup_rog_key
 }
 
+status() {
+  local pages; pages=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
+  local pool;  pool=$(cat /sys/module/ttm/parameters/page_pool_size 2>/dev/null || echo 0)
+  if [[ $pages == "$TTM" ]]; then ok "ttm.pages_limit=$TTM"; else warn "ttm.pages_limit=$pages (reboot pending?)"; fi
+  if [[ $pool  == "$TTM" ]]; then ok "ttm.page_pool_size=$TTM"; else warn "ttm.page_pool_size=$pool (reboot pending?)"; fi
+
+  if [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]]; then
+    ok "networkd-wait-online masked"
+  else
+    fail "networkd-wait-online not masked"
+  fi
+
+  if systemctl is-active --quiet systemd-oomd; then ok "systemd-oomd active"; else fail "systemd-oomd not active"; fi
+
+  local wmsf; wmsf=$(sysctl -n vm.watermark_scale_factor 2>/dev/null || echo 0)
+  if [[ $wmsf == 100 ]]; then ok "vm.watermark_scale_factor=100"; else fail "vm.watermark_scale_factor=$wmsf"; fi
+
+  local f
+  for f in /boot/loader/entries/*linux.conf; do
+    [[ "$f" == *.bak.* ]] && continue
+    [[ -f "$f" ]] || continue
+    if grep -q "ttm.pages_limit=${TTM}" "$f"; then
+      ok "bootloader patched: $(basename "$f")"
+    else
+      warn "bootloader not patched: $(basename "$f")"
+    fi
+  done
+
+  if command -v z13ctl &>/dev/null; then
+    local rules=/etc/udev/rules.d/99-z13ctl.rules
+    if [[ -f "$rules" ]] && grep -q 'GROUP="input"' "$rules"; then
+      ok "z13ctl rules: GROUP=input"
+    else
+      fail "z13ctl rules missing or wrong group"
+    fi
+    local dropin=/etc/systemd/system/z13ctl-perms.service.d/ryzen-smu.conf
+    if [[ -f "$dropin" ]]; then
+      ok "z13ctl-perms: ryzen_smu drop-in present"
+    else
+      warn "z13ctl-perms: ryzen_smu drop-in missing"
+    fi
+    local real_user="${SUDO_USER:-}"
+    if [[ -n "$real_user" ]]; then
+      if id -nG "$real_user" | grep -qw input; then
+        ok "$real_user in input group"
+      else
+        fail "$real_user not in input group"
+      fi
+    fi
+  else
+    warn "z13ctl not installed"
+  fi
+}
+
 optimize() {
   setup_rog_key
 
-  local TTM=5242880  # 20 GB iGPU VRAM cap
-
-  local entry=""
+  local -a entries=()
+  local f
   for f in /boot/loader/entries/*linux.conf; do
     [[ "$f" == *.bak.* ]] && continue
-    [[ -f "$f" ]] && { entry="$f"; break; }
+    [[ -f "$f" ]] && entries+=("$f")
   done
-  [[ -n "$entry" ]] || { fail "no systemd-boot entry found"; return 1; }
+  [[ ${#entries[@]} -gt 0 ]] || { fail "no systemd-boot entry found"; return 1; }
 
-  if ! grep -q "ttm.pages_limit=${TTM}" "$entry"; then
-    cp -a "$entry" "${entry}.bak.$(date +%Y%m%d-%H%M%S)"
-    sed -i -E \
-      -e 's/[[:space:]]*(amdgpu\.gttsize|ttm\.pages_limit|ttm\.page_pool_size)=[0-9]+//g' \
-      -e 's/[[:space:]]+$//' \
-      "$entry"
-    sed -i -E "s|^(options .*)|\1 ttm.pages_limit=${TTM} ttm.page_pool_size=${TTM}|" "$entry"
-    ok "bootloader patched"
-  fi
+  local entry
+  for entry in "${entries[@]}"; do
+    if ! grep -q "ttm.pages_limit=${TTM}" "$entry"; then
+      cp -a "$entry" "${entry}.bak.$(date +%Y%m%d-%H%M%S)"
+      sed -i -E \
+        -e 's/[[:space:]]*(amdgpu\.gttsize|ttm\.pages_limit|ttm\.page_pool_size)=[0-9]+//g' \
+        -e 's/[[:space:]]+$//' \
+        "$entry"
+      sed -i -E "s|^(options .*)|\1 ttm.pages_limit=${TTM} ttm.page_pool_size=${TTM}|" "$entry"
+      ok "bootloader patched: $(basename "$entry")"
+    fi
+  done
 
   [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]] || {
     systemctl disable --now systemd-networkd-wait-online.service 2>/dev/null || true
@@ -141,20 +205,7 @@ optimize() {
     sysctl --system >/dev/null && ok "vm.watermark_scale_factor=100"
   fi
 
-  # Verify
-  local pages; pages=$(cat /sys/module/ttm/parameters/pages_limit 2>/dev/null || echo 0)
-  local pool;  pool=$(cat /sys/module/ttm/parameters/page_pool_size 2>/dev/null || echo 0)
-  if [[ $pages == "$TTM" ]]; then ok "ttm.pages_limit=$TTM"; else warn "ttm.pages_limit=$pages (reboot pending?)"; fi
-  if [[ $pool  == "$TTM" ]]; then ok "ttm.page_pool_size=$TTM"; else warn "ttm.page_pool_size=$pool (reboot pending?)"; fi
-  if [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]]; then
-    ok "networkd-wait-online masked"
-  else
-    fail "networkd-wait-online not masked"
-  fi
-  if systemctl is-active --quiet systemd-oomd; then ok "systemd-oomd active"; else fail "systemd-oomd not active"; fi
-  local wmsf; wmsf=$(sysctl -n vm.watermark_scale_factor)
-  if [[ $wmsf == 100 ]]; then ok "vm.watermark_scale_factor=100"; else fail "vm.watermark_scale_factor=$wmsf"; fi
-
+  status
   [[ $FAIL -eq 0 ]] && ok "all checks passed" || true
 }
 
@@ -164,7 +215,8 @@ case "${1:-}" in
                sleep 10; shutdown -r now ;;
   --optimize)  optimize ;;
   --no-reboot) setup; [[ $FAIL -eq 0 ]] || exit $FAIL; optimize ;;
-  *)           printf 'usage: %s [--optimize | --no-reboot]\n' "$0" >&2; exit 1 ;;
+  --status)    status; [[ $FAIL -eq 0 ]] && ok "all checks passed" || true ;;
+  *)           printf 'usage: %s [--optimize | --no-reboot | --status]\n' "$0" >&2; exit 1 ;;
 esac
 
 exit $((FAIL > 0 ? 1 : 0))
