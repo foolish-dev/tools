@@ -8,7 +8,7 @@
 #   z13 --status      verify current state without making changes
 #   z13 --fix-touchpad  rebind/uninhibit touchpad frozen by armoury crate
 
-set -euo pipefail
+set -Eeuo pipefail
 
 FAIL=0
 GRN=$'\033[0;32m'; RED=$'\033[0;31m'; YLW=$'\033[1;33m'; BLU=$'\033[0;34m'; RST=$'\033[0m'
@@ -17,7 +17,7 @@ ok()   { printf '%s[OK]%s %s\n' "$GRN" "$RST" "$*"; }
 warn() { printf '%s[!!]%s %s\n' "$YLW" "$RST" "$*"; }
 fail() { printf '%s[!!]%s %s\n' "$RED" "$RST" "$*"; : $((++FAIL)); }
 
-trap 'printf "%s[ERR]%s line %d: %s\n" "$RED" "$RST" "$LINENO" "$BASH_COMMAND" >&2' ERR
+trap 'printf "%s[ERR]%s line %d: %s (exit %d)\n" "$RED" "$RST" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
 
 [[ $EUID -ne 0 ]] && exec sudo -E "$0" "$@"
 
@@ -90,7 +90,10 @@ EOF
 
   if [[ $rules_changed -eq 1 ]]; then
     udevadm control --reload-rules
-    udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+    # Narrow trigger to ASUS-vendor (0b05) HID/input devices so we don't
+    # disconnect/reconnect every input device on the system.  Platform devices
+    # (battery threshold, asus-armoury) don't hot-plug and don't need a trigger.
+    udevadm trigger --subsystem-match=hidraw --subsystem-match=input --attr-match=idVendor=0b05
     ok "udev rules reloaded"
   fi
 
@@ -161,14 +164,18 @@ setup() {
   local prod; prod=$(cat /sys/devices/dmi/id/product_name 2>/dev/null || true)
   [[ "$prod" == *"Z13"*"GZ302"* ]] || warn "unexpected product: $prod"
 
-  for pkg in rocm-opencl-runtime rocm-device-libs hip-runtime-amd; do
-    pacman -Qi "$pkg" &>/dev/null && continue
-    if pacman -S --noconfirm --needed "$pkg"; then
-      ok "$pkg"
-    else
-      fail "$pkg"
-    fi
-  done
+  if ! command -v pacman &>/dev/null; then
+    warn "pacman not found — package install skipped (non-Arch?)"
+  else
+    for pkg in rocm-opencl-runtime rocm-device-libs hip-runtime-amd; do
+      pacman -Qi "$pkg" &>/dev/null && continue
+      if pacman -S --noconfirm --needed "$pkg"; then
+        ok "$pkg"
+      else
+        fail "$pkg"
+      fi
+    done
+  fi
 
   for p in iommu=pt amd_iommu=on; do
     grep -qw "$p" /proc/cmdline || warn "$p missing from cmdline"
@@ -212,7 +219,7 @@ status() {
   local f
   shopt -s nullglob
   for f in /boot/loader/entries/*linux.conf; do
-    [[ "$f" == *.bak* ]] && continue
+    [[ -f "$f" && "$f" != *.bak* ]] || continue
     if grep -q "ttm.pages_limit=${TTM}" "$f"; then
       ok "bootloader patched: $(basename "$f")"
     else
@@ -279,7 +286,7 @@ optimize() {
   local f
   shopt -s nullglob
   for f in /boot/loader/entries/*linux.conf; do
-    [[ "$f" == *.bak* ]] && continue
+    [[ -f "$f" && "$f" != *.bak* ]] || continue
     entries+=("$f")
   done
   shopt -u nullglob
@@ -323,7 +330,7 @@ optimize() {
   local conf=/etc/sysctl.d/99-gz302-32gb.conf
   if ! grep -q 'watermark_scale_factor *= *100' "$conf" 2>/dev/null; then
     printf 'vm.watermark_scale_factor = 100\n' >"$conf"
-    if sysctl --system >/dev/null; then
+    if sysctl --system &>/dev/null; then
       ok "vm.watermark_scale_factor=100"
     else
       fail "sysctl --system"
