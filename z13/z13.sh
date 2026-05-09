@@ -19,7 +19,7 @@ fail() { printf '%s[!!]%s %s\n' "$RED" "$RST" "$*"; : $((++FAIL)); }
 
 trap 'printf "%s[ERR]%s line %d: %s\n" "$RED" "$RST" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
-[[ $EUID -ne 0 ]] && exec sudo "$0" "$@"
+[[ $EUID -ne 0 ]] && exec sudo -E "$0" "$@"
 
 readonly TTM=5242880  # 20 GiB iGPU VRAM cap (pages × 4 KiB)
 
@@ -65,9 +65,11 @@ setup_rog_key() {
     perms_changed=1
   fi
 
-  # Move ryzen_smu perms into a drop-in so future z13ctl setup runs can't erase them.
+  # Move ryzen_smu perms into a drop-in so future z13ctl setup runs can't erase
+  # them.  Gated on the parent service existing — without it the drop-in is
+  # orphaned and the restart below will fail.
   # `$$f` is systemd's escape for a literal `$f` — sh -c then expands it as a shell var.
-  if [[ ! -f "$dropin" ]]; then
+  if [[ -f "$svc" && ! -f "$dropin" ]]; then
     mkdir -p "$dropin_dir"
     cat >"$dropin" <<'EOF'
 [Service]
@@ -77,9 +79,13 @@ EOF
     perms_changed=1
   fi
 
-  if [[ $perms_changed -eq 1 ]]; then
+  if [[ $perms_changed -eq 1 && -f "$svc" ]]; then
     systemctl daemon-reload
-    systemctl restart z13ctl-perms.service && ok "z13ctl-perms.service restarted"
+    if systemctl restart z13ctl-perms.service; then
+      ok "z13ctl-perms.service restarted"
+    else
+      fail "z13ctl-perms.service restart"
+    fi
   fi
 
   if [[ $rules_changed -eq 1 ]]; then
@@ -89,10 +95,12 @@ EOF
   fi
 
   if ! id -nG "$real_user" | grep -qw input; then
-    usermod -aG input "$real_user" && ok "$real_user → input group (re-login required)"
+    if usermod -aG input "$real_user"; then
+      ok "$real_user → input group (re-login required)"
+    else
+      fail "usermod -aG input $real_user"
+    fi
   fi
-
-  setup_touchpad_rebind
 }
 
 setup_touchpad_rebind() {
@@ -101,8 +109,10 @@ setup_touchpad_rebind() {
   # When z13ctl opens the ASUS HID control interface the MCU sometimes resets,
   # causing the touchpad to reconnect bound to hid-generic instead of
   # hid-multitouch.  This rule catches that bind event and corrects it.
+  # systemd-run --no-block runs the work outside udev's synchronous timeout,
+  # so modprobe + sysfs writes can't deadlock against the loading subsystem.
   cat >"$rule" <<'EOF'
-ACTION=="bind", SUBSYSTEM=="hid", DRIVER=="hid-generic", ATTRS{idVendor}=="0b05", ATTRS{name}=="*[Tt]ouchpad*", RUN+="/bin/sh -c 'modprobe hid_multitouch; echo %k >/sys/bus/hid/drivers/hid-generic/unbind; echo %k >/sys/bus/hid/drivers/hid-multitouch/bind'"
+ACTION=="bind", SUBSYSTEM=="hid", DRIVER=="hid-generic", ATTRS{idVendor}=="0b05", ATTRS{name}=="*[Tt]ouchpad*", RUN+="/usr/bin/systemd-run --no-block /bin/sh -c 'modprobe hid_multitouch; echo %k >/sys/bus/hid/drivers/hid-generic/unbind; echo %k >/sys/bus/hid/drivers/hid-multitouch/bind'"
 EOF
   ok "touchpad rebind rule installed"
   udevadm control --reload-rules
@@ -114,7 +124,7 @@ fix_touchpad() {
   local dev name id drv
   for dev in /sys/bus/hid/devices/*/; do
     name=$(cat "${dev}name" 2>/dev/null || true)
-    [[ "$name" == *[Tt]ouchpad* ]] || continue
+    [[ "${name,,}" == *touchpad* ]] || continue
     any=1
     id=$(basename "$dev")
     drv=none; [[ -L "${dev}driver" ]] && drv=$(basename "$(readlink -f "${dev}driver")")
@@ -135,7 +145,7 @@ fix_touchpad() {
   for inh in /sys/class/input/*/device/inhibited; do
     [[ -f "$inh" ]] || continue
     nm=$(cat "$(dirname "$(dirname "$inh")")/name" 2>/dev/null || true)
-    [[ "$nm" == *[Tt]ouchpad* ]] || continue
+    [[ "${nm,,}" == *touchpad* ]] || continue
     any=1
     if [[ $(cat "$inh") == 1 ]]; then
       echo 0 >"$inh" && ok "touchpad uninhibited: $nm" || fail "uninhibit failed: $nm"
@@ -153,7 +163,11 @@ setup() {
 
   for pkg in rocm-opencl-runtime rocm-device-libs hip-runtime-amd; do
     pacman -Qi "$pkg" &>/dev/null && continue
-    pacman -S --noconfirm --needed "$pkg" && ok "$pkg" || fail "$pkg"
+    if pacman -S --noconfirm --needed "$pkg"; then
+      ok "$pkg"
+    else
+      fail "$pkg"
+    fi
   done
 
   for p in iommu=pt amd_iommu=on; do
@@ -175,6 +189,7 @@ EOF
   fi
 
   setup_rog_key
+  setup_touchpad_rebind
 }
 
 status() {
@@ -195,21 +210,22 @@ status() {
   if [[ $wmsf == 100 ]]; then ok "vm.watermark_scale_factor=100"; else fail "vm.watermark_scale_factor=$wmsf"; fi
 
   local f
+  shopt -s nullglob
   for f in /boot/loader/entries/*linux.conf; do
     [[ "$f" == *.bak* ]] && continue
-    [[ -f "$f" ]] || continue
     if grep -q "ttm.pages_limit=${TTM}" "$f"; then
       ok "bootloader patched: $(basename "$f")"
     else
       warn "bootloader not patched: $(basename "$f")"
     fi
   done
+  shopt -u nullglob
 
   local tp_found=0
   local dev name drv
   for dev in /sys/bus/hid/devices/*/; do
     name=$(cat "${dev}name" 2>/dev/null || true)
-    [[ "$name" == *[Tt]ouchpad* ]] || continue
+    [[ "${name,,}" == *touchpad* ]] || continue
     tp_found=1
     drv=none; [[ -L "${dev}driver" ]] && drv=$(basename "$(readlink -f "${dev}driver")")
     case "$drv" in
@@ -219,6 +235,13 @@ status() {
     esac
   done
   [[ $tp_found -eq 0 ]] && warn "touchpad not found in HID devices (may be I2C)"
+
+  local tp_rule=/etc/udev/rules.d/99-z13-touchpad.rules
+  if [[ -f "$tp_rule" ]] && grep -q 'hid-multitouch/bind' "$tp_rule"; then
+    ok "touchpad rebind rule installed"
+  else
+    warn "touchpad rebind rule missing"
+  fi
 
   if command -v z13ctl &>/dev/null; then
     local rules=/etc/udev/rules.d/99-z13ctl.rules
@@ -250,19 +273,27 @@ status() {
 
 optimize() {
   setup_rog_key
+  setup_touchpad_rebind
 
   local -a entries=()
   local f
+  shopt -s nullglob
   for f in /boot/loader/entries/*linux.conf; do
     [[ "$f" == *.bak* ]] && continue
-    [[ -f "$f" ]] && entries+=("$f")
+    entries+=("$f")
   done
+  shopt -u nullglob
   [[ ${#entries[@]} -gt 0 ]] || { fail "no systemd-boot entry found"; return 1; }
 
   local entry
   for entry in "${entries[@]}"; do
     if ! grep -q "ttm.pages_limit=${TTM}" "$entry"; then
-      cp -a "$entry" "${entry}.bak"
+      if ! grep -q '^options ' "$entry"; then
+        fail "no options line in $(basename "$entry") — skipping"
+        continue
+      fi
+      # Preserve the original on first patch; never overwrite an existing .bak.
+      [[ -e "${entry}.bak" ]] || cp -a "$entry" "${entry}.bak"
       sed -i -E \
         -e 's/[[:space:]]*(amdgpu\.gttsize|ttm\.pages_limit|ttm\.page_pool_size)=[0-9]+//g' \
         -e 's/[[:space:]]+$//' \
@@ -272,30 +303,42 @@ optimize() {
     fi
   done
 
-  [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]] || {
+  if [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) != masked ]]; then
     systemctl disable --now systemd-networkd-wait-online.service 2>/dev/null || true
-    systemctl mask systemd-networkd-wait-online.service && ok "networkd-wait-online masked"
-  }
+    if systemctl mask systemd-networkd-wait-online.service; then
+      ok "networkd-wait-online masked"
+    else
+      fail "mask networkd-wait-online"
+    fi
+  fi
 
-  [[ $(systemctl is-enabled systemd-oomd.service 2>/dev/null) == enabled ]] || {
-    systemctl enable --now systemd-oomd.service && ok "systemd-oomd enabled"
-  }
+  if [[ $(systemctl is-enabled systemd-oomd.service 2>/dev/null) != enabled ]]; then
+    if systemctl enable --now systemd-oomd.service; then
+      ok "systemd-oomd enabled"
+    else
+      fail "enable systemd-oomd"
+    fi
+  fi
 
   local conf=/etc/sysctl.d/99-gz302-32gb.conf
   if ! grep -q 'watermark_scale_factor *= *100' "$conf" 2>/dev/null; then
     printf 'vm.watermark_scale_factor = 100\n' >"$conf"
-    sysctl --system >/dev/null && ok "vm.watermark_scale_factor=100"
+    if sysctl --system >/dev/null; then
+      ok "vm.watermark_scale_factor=100"
+    else
+      fail "sysctl --system"
+    fi
   fi
 
   status
 }
 
 case "${1:-}" in
-  "")          setup; [[ $FAIL -eq 0 ]] || exit $FAIL
+  "")          setup; [[ $FAIL -eq 0 ]] || exit 1
                info "rebooting in 10s — run '$0 --optimize' after restart"
                sleep 10; shutdown -r now ;;
   --optimize)  optimize ;;
-  --no-reboot) setup; [[ $FAIL -eq 0 ]] || exit $FAIL; optimize ;;
+  --no-reboot) setup; [[ $FAIL -eq 0 ]] || exit 1; optimize ;;
   --status)       status ;;
   --fix-touchpad) fix_touchpad; [[ $FAIL -eq 0 ]] && ok "touchpad OK" || true ;;
   *)              printf 'usage: %s [--optimize | --no-reboot | --status | --fix-touchpad]\n' "$0" >&2; exit 1 ;;
