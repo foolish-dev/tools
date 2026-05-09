@@ -6,6 +6,7 @@
 #   z13 --optimize    post-reboot optimization
 #   z13 --no-reboot   setup + optimize inline (testing)
 #   z13 --status      verify current state without making changes
+#   z13 --fix-touchpad  rebind/uninhibit touchpad frozen by armoury crate
 
 set -euo pipefail
 
@@ -86,6 +87,60 @@ EOF
   if ! id -nG "$real_user" | grep -qw input; then
     usermod -aG input "$real_user" && ok "$real_user → input group (re-login required)"
   fi
+
+  setup_touchpad_rebind
+}
+
+setup_touchpad_rebind() {
+  local rule=/etc/udev/rules.d/99-z13-touchpad.rules
+  [[ -f "$rule" ]] && return
+  # When z13ctl opens the ASUS HID control interface the MCU sometimes resets,
+  # causing the touchpad to reconnect bound to hid-generic instead of
+  # hid-multitouch.  This rule catches that bind event and corrects it.
+  cat >"$rule" <<'EOF'
+ACTION=="bind", SUBSYSTEM=="hid", DRIVER=="hid-generic", ATTRS{idVendor}=="0b05", ATTRS{name}=="*[Tt]ouchpad*", RUN+="/bin/sh -c 'modprobe hid_multitouch; echo %k >/sys/bus/hid/drivers/hid-generic/unbind; echo %k >/sys/bus/hid/drivers/hid-multitouch/bind'"
+EOF
+  ok "touchpad rebind rule installed"
+  udevadm control --reload-rules
+}
+
+fix_touchpad() {
+  # HID path: rebind USB touchpad from hid-generic → hid-multitouch
+  local any=0
+  local dev name id drv
+  for dev in /sys/bus/hid/devices/*/; do
+    name=$(cat "${dev}name" 2>/dev/null || true)
+    [[ "$name" == *[Tt]ouchpad* ]] || continue
+    any=1
+    id=$(basename "$dev")
+    drv=$(basename "$(readlink -f "${dev}driver" 2>/dev/null)" 2>/dev/null) || drv=none
+    if [[ "$drv" == hid-generic ]]; then
+      modprobe hid_multitouch 2>/dev/null || true
+      echo "$id" >/sys/bus/hid/drivers/hid-generic/unbind 2>/dev/null
+      echo "$id" >/sys/bus/hid/drivers/hid-multitouch/bind 2>/dev/null \
+        && ok "touchpad rebound to hid-multitouch: $name" || fail "rebind failed: $name"
+    elif [[ "$drv" == hid-multitouch ]]; then
+      ok "touchpad already on hid-multitouch: $name"
+    else
+      warn "touchpad driver=$drv: $name"
+    fi
+  done
+
+  # input path: uninhibit if kernel-inhibited (covers I2C and USB)
+  local inh nm
+  for inh in /sys/class/input/*/device/inhibited; do
+    [[ -f "$inh" ]] || continue
+    nm=$(cat "$(dirname "$(dirname "$inh")")/name" 2>/dev/null || true)
+    [[ "$nm" == *[Tt]ouchpad* ]] || continue
+    any=1
+    if [[ $(cat "$inh") == 1 ]]; then
+      echo 0 >"$inh" && ok "touchpad uninhibited: $nm" || fail "uninhibit failed: $nm"
+    else
+      ok "touchpad not inhibited: $nm"
+    fi
+  done
+
+  [[ $any -eq 0 ]] && warn "no touchpad found"
 }
 
 setup() {
@@ -139,6 +194,21 @@ status() {
       warn "bootloader not patched: $(basename "$f")"
     fi
   done
+
+  local tp_found=0
+  local dev name drv
+  for dev in /sys/bus/hid/devices/*/; do
+    name=$(cat "${dev}name" 2>/dev/null || true)
+    [[ "$name" == *[Tt]ouchpad* ]] || continue
+    tp_found=1
+    drv=$(basename "$(readlink -f "${dev}driver" 2>/dev/null)" 2>/dev/null) || drv=none
+    case "$drv" in
+      hid-multitouch) ok  "touchpad: hid-multitouch ($name)" ;;
+      hid-generic)    fail "touchpad: hid-generic — needs rebind ($name)" ;;
+      *)              warn "touchpad: driver=$drv ($name)" ;;
+    esac
+  done
+  [[ $tp_found -eq 0 ]] && warn "touchpad not found in HID devices (may be I2C)"
 
   if command -v z13ctl &>/dev/null; then
     local rules=/etc/udev/rules.d/99-z13ctl.rules
@@ -215,8 +285,9 @@ case "${1:-}" in
                sleep 10; shutdown -r now ;;
   --optimize)  optimize ;;
   --no-reboot) setup; [[ $FAIL -eq 0 ]] || exit $FAIL; optimize ;;
-  --status)    status; [[ $FAIL -eq 0 ]] && ok "all checks passed" || true ;;
-  *)           printf 'usage: %s [--optimize | --no-reboot | --status]\n' "$0" >&2; exit 1 ;;
+  --status)       status; [[ $FAIL -eq 0 ]] && ok "all checks passed" || true ;;
+  --fix-touchpad) fix_touchpad; [[ $FAIL -eq 0 ]] && ok "touchpad OK" || true ;;
+  *)              printf 'usage: %s [--optimize | --no-reboot | --status | --fix-touchpad]\n' "$0" >&2; exit 1 ;;
 esac
 
 exit $((FAIL > 0 ? 1 : 0))
