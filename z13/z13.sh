@@ -59,7 +59,7 @@ setup_rog_key() {
 
   # Safety: z13ctl setup may emit the perms service with the wrong group.
   if [[ -f "$svc" ]] && grep -q 'chgrp users' "$svc"; then
-    cp -a "$svc" "${svc}.bak"
+    [[ -e "${svc}.bak" ]] || cp -a "$svc" "${svc}.bak"
     sed -i 's/chgrp users/chgrp input/g' "$svc"
     ok "z13ctl-perms.service: corrected group users→input"
     perms_changed=1
@@ -189,9 +189,11 @@ EOF
     udevadm control --reload-rules
     # Rule fires on add; cards are already added, so set existing ones directly.
     local lvl
+    shopt -s nullglob
     for lvl in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
       [[ -w "$lvl" ]] && echo auto >"$lvl" 2>/dev/null || true
     done
+    shopt -u nullglob
     ok "amdgpu DPM udev rule created"
   fi
 
@@ -281,6 +283,9 @@ status() {
 optimize() {
   setup_rog_key
   setup_touchpad_rebind
+  # Rule above only fires on the next bind event; correct an already-bound
+  # touchpad now so --no-reboot / --optimize leaves the system fully fixed.
+  fix_touchpad
 
   local -a entries=()
   local f
