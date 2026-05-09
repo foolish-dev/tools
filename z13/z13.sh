@@ -47,6 +47,7 @@ setup_rog_key() {
 
   # Safety: z13ctl setup may emit the perms service with the wrong group.
   if [[ -f "$svc" ]] && grep -q 'chgrp users' "$svc"; then
+    cp -a "$svc" "${svc}.bak.$(date +%Y%m%d-%H%M%S)"
     sed -i 's/chgrp users/chgrp input/g' "$svc"
     ok "z13ctl-perms.service: corrected group users→input"
     perms_changed=1
@@ -127,7 +128,7 @@ optimize() {
 
   [[ $(systemctl is-enabled systemd-networkd-wait-online.service 2>/dev/null) == masked ]] || {
     systemctl disable --now systemd-networkd-wait-online.service 2>/dev/null || true
-    systemctl mask systemd-networkd-wait-online.service && ok "networkd-wait-online masked"
+    systemctl mask systemd-networkd-wait-online.service
   }
 
   [[ $(systemctl is-enabled systemd-oomd.service 2>/dev/null) == enabled ]] || {
