@@ -164,7 +164,9 @@ fix_touchpad() {
   local inh nm
   for inh in /sys/class/input/*/device/inhibited; do
     [[ -f "$inh" ]] || continue
-    nm=$(cat "$(dirname "$(dirname "$inh")")/name" 2>/dev/null || true)
+    # name lives next to inhibited in the input device dir (one dirname,
+    # not two — eventN/name does not exist, eventN/device/name does).
+    nm=$(cat "${inh%/inhibited}/name" 2>/dev/null || true)
     [[ "${nm,,}" == *touchpad* ]] || continue
     any=1
     if [[ $(cat "$inh") == 1 ]]; then
