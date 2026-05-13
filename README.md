@@ -34,6 +34,8 @@ ethos         each change gated on detection of already-correct state
 ~/tools ❯ sudo ./z13/z13.sh                  # setup → reboot
 ~/tools ❯ sudo ./z13/z13.sh --optimize       # post-reboot optimization + verification
 ~/tools ❯ sudo ./z13/z13.sh --no-reboot      # setup + optimize inline (testing)
+~/tools ❯ sudo ./z13/z13.sh --status         # verify current state without making changes
+~/tools ❯ sudo ./z13/z13.sh --fix-touchpad   # rebind/uninhibit touchpad frozen by armoury crate
 ```
 
 Each step is gated on detection of the already-correct state — re-running is a no-op.
