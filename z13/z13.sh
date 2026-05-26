@@ -352,6 +352,10 @@ optimize() {
 
   local conf=/etc/sysctl.d/99-gz302-32gb.conf
   if ! grep -q 'watermark_scale_factor *= *100' "$conf" 2>/dev/null; then
+    # Match the backups-before-mutation convention used at lines 62 and
+    # 326 — if the user already has a pre-existing 99-gz302-32gb.conf
+    # with their own tweaks, preserve it so a re-run doesn't clobber.
+    [[ -e "$conf" && ! -e "${conf}.bak" ]] && cp -a "$conf" "${conf}.bak"
     printf 'vm.watermark_scale_factor = 100\n' >"$conf"
     if sysctl --system &>/dev/null; then
       ok "vm.watermark_scale_factor=100"
