@@ -1,8 +1,9 @@
 [![per-machine bring-up · hardware-specific tuning · idempotent, re-run safe · arch linux, terminal-first](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=20&duration=2800&pause=600&color=7AA2F7&center=true&vCenter=true&width=720&lines=%2F%2F+per-machine+bring-up+scripts;%2F%2F+hardware-specific+tuning;%2F%2F+idempotent%2C+re-run+safe;%2F%2F+arch+linux%2C+terminal-first)](https://github.com/foolish-dev/tools)
 
-> *bring-up · tuning · verification*  ·  bash · systemd-boot · sysctl · udev
+> *bring-up · tuning · verification*  ·  rust · bash · systemd-boot · sysctl · udev
 
 ![Arch Linux](https://img.shields.io/badge/Arch_Linux-7aa2f7?style=flat-square&logo=archlinux&logoColor=1a1b26)
+![Rust](https://img.shields.io/badge/Rust-e0af68?style=flat-square&logo=rust&logoColor=1a1b26)
 ![Bash](https://img.shields.io/badge/Bash-9ece6a?style=flat-square&logo=gnubash&logoColor=1a1b26)
 ![systemd](https://img.shields.io/badge/systemd-bb9af7?style=flat-square&logoColor=1a1b26)
 ![AMD](https://img.shields.io/badge/AMD-ff9e64?style=flat-square&logo=amd&logoColor=1a1b26)
@@ -47,10 +48,11 @@ Each step is gated on detection of the already-correct state — re-running is a
 
 <sub>// same machine, other OS — offline Windows 11 driver + firmware pack</sub>
 
-**[`fetch.sh`](GZ302EA/fetch.sh)** — pull all 26 ASUS packages (~11 GB: every current driver, BIOS 311 as Windows updater + EZ Flash image, PD/keyboard/light-bar firmware tools, Armoury Crate full offline suite) from the ASUS CDN and verify each against [`SHA256SUMS`](GZ302EA/SHA256SUMS) (hashes as published by the ASUS support API). Skips whatever is already present and verified.
+**[`gz302ea-fetch`](GZ302EA/fetch)** — Rust fetcher (rustls + sha2, no curl/bash/system-TLS): pulls all 26 ASUS packages (~11 GB: every current driver, BIOS 311 as Windows updater + EZ Flash image, PD/keyboard/light-bar firmware tools, Armoury Crate full offline suite) from the ASUS CDN and verifies each against its ASUS-published SHA-256. Skips whatever is already present and verified; same source builds on Arch and on Windows. [`manifest.tsv`](GZ302EA/manifest.tsv) is the source of truth, drift-tested against [`SHA256SUMS`](GZ302EA/SHA256SUMS) by `cargo test`.
 
 ```text
-~/tools ❯ cd /mnt/usb && ~/tools/GZ302EA/fetch.sh   # download + verify into CWD
+~/tools ❯ cargo build --release --manifest-path GZ302EA/fetch/Cargo.toml
+~/tools ❯ ./GZ302EA/fetch/target/release/gz302ea-fetch /mnt/usb   # download + verify (default: CWD)
 ```
 
 [`README`](GZ302EA/README.md) covers install order, distilling the Inno installers into pnputil-ready INF trees (7z overlay / wine silent-install) for the 24H2 offline-OOBE dance, and the traps: the BIOS-capsule INF that must stay out of bulk driver sweeps, and the PD/keyboard firmware tools that are online-only downloader harnesses.

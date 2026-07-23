@@ -6,10 +6,16 @@ hashes ASUS publishes in its support API (`SHA256SUMS`); versions current as
 of 2026-07-23.
 
 ```text
-❯ cd /mnt/usb && ~/tools/GZ302EA/fetch.sh   # download + verify ~11 GB into CWD
+❯ cargo build --release --manifest-path fetch/Cargo.toml
+❯ ./fetch/target/release/gz302ea-fetch /mnt/usb   # download + verify ~11 GB (default: CWD)
 ```
 
-Re-running skips everything already present and verified. Grab Windows
+`gz302ea-fetch` is pure Rust (rustls + sha2 — no curl, bash, or system TLS),
+so the same binary story works on Arch Linux and on Windows, where the pack
+actually gets used. `manifest.tsv` (sha + name + CDN path) is the source of
+truth; `cargo test` drift-checks it against `SHA256SUMS`, which stays around
+for plain `sha256sum -c`. Re-running skips everything already present and
+verified. Grab Windows
 install media separately (MediaCreationTool / Installation Assistant from
 Microsoft — no stable URLs or published hashes, so not part of the manifest).
 

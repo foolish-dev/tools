@@ -1,0 +1,10 @@
+[package]
+name = "gz302ea-fetch"
+version = "0.1.0"
+edition = "2021"
+description = "Download + verify the GZ302EA Windows 11 driver pack from the ASUS CDN"
+license = "MIT"
+
+[dependencies]
+sha2 = "0.10"
+ureq = "2"
