@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Install the distilled GZ302EA driver payloads via pnputil — replaces the ASUS installer exes"
 license = "MIT"
+readme = "README.md"
 
 [dependencies]

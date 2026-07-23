@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Download + verify the GZ302EA Windows 11 driver pack from the ASUS CDN"
 license = "MIT"
+readme = "README.md"
 
 [dependencies]
 sha2 = "0.10"

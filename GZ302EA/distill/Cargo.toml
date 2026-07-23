@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Distill the GZ302EA driver pack installers into raw payloads (Extracted/)"
 license = "MIT"
+readme = "README.md"
 
 [dependencies]
