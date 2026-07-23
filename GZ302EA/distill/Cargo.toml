@@ -1,0 +1,8 @@
+[package]
+name = "gz302ea-distill"
+version = "0.1.0"
+edition = "2021"
+description = "Distill the GZ302EA driver pack installers into raw payloads (Extracted/)"
+license = "MIT"
+
+[dependencies]

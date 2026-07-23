@@ -48,11 +48,10 @@ Each step is gated on detection of the already-correct state — re-running is a
 
 <sub>// same machine, other OS — offline Windows 11 driver + firmware pack</sub>
 
-**[`gz302ea-fetch`](GZ302EA/fetch)** — Rust fetcher (rustls + sha2, no curl/bash/system-TLS): pulls all 26 ASUS packages (~11 GB: every current driver, BIOS 311 as Windows updater + EZ Flash image, PD/keyboard/light-bar firmware tools, Armoury Crate full offline suite) from the ASUS CDN and verifies each against its ASUS-published SHA-256. Skips whatever is already present and verified; same source builds on Arch and on Windows. [`manifest.tsv`](GZ302EA/manifest.tsv) is the source of truth, drift-tested against [`SHA256SUMS`](GZ302EA/SHA256SUMS) by `cargo test`.
+Three Rust tools — **[`gz302ea-fetch`](GZ302EA/fetch)** (download + verify all 26 ASUS packages, ~11 GB, against their ASUS-published SHA-256s; rustls + sha2, no curl), **[`gz302ea-distill`](GZ302EA/distill)** (installers → pnputil-ready INF payloads via 7z overlay / wine silent-install), **[`gz302ea-install`](GZ302EA/install)** (Windows-side: stages every driver INF via pnputil in dependency order — the ASUS installer exes, replaced). Manifest drift-tested end to end; everything idempotent. One line runs the whole Linux side:
 
 ```text
-~/tools ❯ cargo build --release --manifest-path GZ302EA/fetch/Cargo.toml
-~/tools ❯ ./GZ302EA/fetch/target/release/gz302ea-fetch /mnt/usb   # download + verify (default: CWD)
+~/tools ❯ curl -fsSL https://raw.githubusercontent.com/foolish-dev/tools/main/GZ302EA/setup.sh | bash -s -- /mnt/usb
 ```
 
 [`README`](GZ302EA/README.md) covers install order, distilling the Inno installers into pnputil-ready INF trees (7z overlay / wine silent-install) for the 24H2 offline-OOBE dance, and the traps: the BIOS-capsule INF that must stay out of bulk driver sweeps, and the PD/keyboard firmware tools that are online-only downloader harnesses.

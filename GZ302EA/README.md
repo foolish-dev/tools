@@ -5,17 +5,32 @@ Flow Z13 GZ302EA (Strix Halo). All 26 ASUS packages are pinned by the SHA-256
 hashes ASUS publishes in its support API (`SHA256SUMS`); versions current as
 of 2026-07-23.
 
+One line does it all on Arch (needs `rust` + `7zip`, `wine` for full distill):
+
 ```text
-❯ cargo build --release --manifest-path fetch/Cargo.toml
-❯ ./fetch/target/release/gz302ea-fetch /mnt/usb   # download + verify ~11 GB (default: CWD)
+❯ curl -fsSL https://raw.githubusercontent.com/foolish-dev/tools/main/GZ302EA/setup.sh | bash -s -- /mnt/usb
 ```
 
-`gz302ea-fetch` is pure Rust (rustls + sha2 — no curl, bash, or system TLS),
-so the same binary story works on Arch Linux and on Windows, where the pack
-actually gets used. `manifest.tsv` (sha + name + CDN path) is the source of
-truth; `cargo test` drift-checks it against `SHA256SUMS`, which stays around
-for plain `sha256sum -c`. Re-running skips everything already present and
-verified. Grab Windows
+[`setup.sh`](setup.sh) builds the three Rust tools, downloads + verifies all
+26 packages into the target dir, distills them to pnputil-ready payloads in
+`Extracted/`, and previews the Windows install plan. Everything is
+idempotent — re-runs verify instead of re-doing.
+
+The tools also run individually (`cargo build --release` in each crate):
+
+- **[`fetch/`](fetch)** `gz302ea-fetch [dir]` — download + verify. Pure Rust
+  (rustls + sha2 — no curl, bash, or system TLS). `manifest.tsv` (sha + name
+  + CDN path) is the source of truth; `cargo test` drift-checks it against
+  `SHA256SUMS`, which stays around for plain `sha256sum -c`.
+- **[`distill/`](distill)** `gz302ea-distill [dir]` — installers → raw
+  payloads in `Extracted/` (7z overlay / wine silent-install; see below).
+- **[`install/`](install)** `gz302ea-install [dir] [--dry-run]` — the Rust
+  replacement for running the ASUS installer exes: on Windows, elevated,
+  stages every driver INF via pnputil in dependency order (chipset first)
+  and runs the Smart Display Control MSI. Tests pin the BIOS capsule and
+  firmware tools as never-installed. `--dry-run` prints the plan anywhere.
+
+Grab Windows
 install media separately (MediaCreationTool / Installation Assistant from
 Microsoft — no stable URLs or published hashes, so not part of the manifest).
 
@@ -66,9 +81,9 @@ Realtek Codec Console (`9P2B8MCSVPLN`).
 
 ## Distilling installers → pnputil-ready INFs
 
-Every ASUS package is an Inno Setup exe; the raw INF/SYS/CAT payloads can be
-pulled out without running a single GUI installer. Two techniques cover all of
-them:
+Every ASUS package is an Inno Setup exe; `gz302ea-distill` pulls the raw
+INF/SYS/CAT payloads out without running a single GUI installer. Two
+techniques cover all of them:
 
 - **7z overlay** — GPU, Realtek audio, WLAN, BT, MEP, ASCI v3 and the BIOS
   updater keep their payload 7z-readable: `7z x -oOUT package.exe` yields a
