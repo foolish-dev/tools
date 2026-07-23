@@ -48,7 +48,7 @@ Each step is gated on detection of the already-correct state — re-running is a
 
 <sub>// same machine, other OS — offline Windows 11 driver + firmware pack</sub>
 
-Three Rust tools — **[`gz302ea-fetch`](GZ302EA/fetch)** (download + verify all 26 ASUS packages, ~11 GB, against their ASUS-published SHA-256s; rustls + sha2, no curl), **[`gz302ea-distill`](GZ302EA/distill)** (installers → pnputil-ready INF payloads via 7z overlay / wine silent-install), **[`gz302ea-install`](GZ302EA/install)** (Windows-side: stages every driver INF via pnputil in dependency order — the ASUS installer exes, replaced). Manifest drift-tested end to end; everything idempotent. One line runs the whole Linux side:
+Three Rust tools — **[`gz302ea-fetch`](GZ302EA/fetch)** (download + verify all 26 ASUS packages, ~11 GB, against their ASUS-published SHA-256s; rustls + sha2, no curl), **[`gz302ea-distill`](GZ302EA/distill)** (installers → pnputil-ready INF payloads via 7z overlay / wine silent-install), **[`gz302ea-install`](GZ302EA/install)** (Windows-side: stages every driver INF via pnputil in dependency order — the ASUS installer exes, replaced). Manifest drift-tested end to end; everything idempotent; runs on any distro or macOS (distill prefers `innoextract`, falls back to wine on unix — never executes installers natively). One line runs the whole prep side:
 
 ```text
 ~/tools ❯ curl -fsSL https://raw.githubusercontent.com/foolish-dev/tools/main/GZ302EA/setup.sh | bash -s -- /mnt/usb

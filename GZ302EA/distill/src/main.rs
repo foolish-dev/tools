@@ -2,18 +2,23 @@
 //
 // Reproduces Extracted/ from the downloaded installers (see ../fetch), all of
 // which are Inno Setup exes: seven keep their payload 7z-readable in the PE
-// overlay; the rest need a real silent install under wine in a throwaway
-// prefix. Two packages stage into Inno's self-deleting {tmp} and are captured
-// by polling while the installer runs. Idempotent: components whose output
+// overlay; the rest carry it in the compressed Inno stream. For those,
+// innoextract is preferred (pure extraction, works on any OS); the fallback
+// on unix is a real silent install under wine in a throwaway prefix, where
+// two packages stage into Inno's self-deleting {tmp} and are captured by
+// polling while the installer runs. Idempotent: components whose output
 // directory already has files are skipped.
 //
-// Needs `7z` on PATH; the wine-method components additionally need `wine`.
+// Needs 7-Zip on PATH (any of 7z/7zz/7za); the Inno-stream components
+// additionally need innoextract, or wine on unix. Installers are never run
+// natively — on Windows that would install, not extract.
 // The BIOS updater payload contains BIOS 311 as a UEFI capsule INF — never
 // bulk-inject Extracted/FW_BIOS_Updater with pnputil.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const WINE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -182,6 +187,23 @@ fn have(cmd: &str) -> bool {
         .is_ok()
 }
 
+/// First available 7-Zip binary: `7z` (p7zip/7zip), `7zz` (official
+/// Linux/macOS build), `7za` (standalone).
+fn sevenz() -> Option<&'static str> {
+    static BIN: OnceLock<Option<&'static str>> = OnceLock::new();
+    *BIN.get_or_init(|| ["7z", "7zz", "7za"].into_iter().find(|b| have(b)))
+}
+
+fn innoextract_available() -> bool {
+    static HAVE: OnceLock<bool> = OnceLock::new();
+    *HAVE.get_or_init(|| have("innoextract"))
+}
+
+fn wine_available() -> bool {
+    static HAVE: OnceLock<bool> = OnceLock::new();
+    *HAVE.get_or_init(|| cfg!(unix) && have("wine"))
+}
+
 fn dir_has_files(dir: &Path) -> bool {
     fn walk(d: &Path) -> bool {
         fs::read_dir(d).is_ok_and(|rd| rd.flatten().any(|e| e.path().is_file() || walk(&e.path())))
@@ -226,7 +248,8 @@ fn is_junk(dir: &Path) -> bool {
 }
 
 fn seven_z(archive: &Path, dst: &Path) -> Result<(), String> {
-    let status = Command::new("7z")
+    let bin = sevenz().ok_or("no 7-Zip binary found")?;
+    let status = Command::new(bin)
         .arg("x")
         .arg("-y")
         .arg(format!("-o{}", dst.display()))
@@ -234,14 +257,52 @@ fn seven_z(archive: &Path, dst: &Path) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| format!("spawn 7z: {e}"))?;
+        .map_err(|e| format!("spawn {bin}: {e}"))?;
     // 7z exits non-zero on warnings for PE containers; judge by content.
     let _ = status;
     if is_junk(dst) {
         return Err("payload not 7z-reachable (PE sections only)".into());
     }
     if !dir_has_files(dst) {
-        return Err("7z produced no files".into());
+        return Err(format!("{bin} produced no files"));
+    }
+    Ok(())
+}
+
+/// Align innoextract's layout with the wine method's: {app} contents at the
+/// component root, {tmp} (the harness/tool staging) as tool/.
+fn hoist_inno_layout(dst: &Path) {
+    let app = dst.join("app");
+    if app.is_dir() {
+        if let Ok(rd) = fs::read_dir(&app) {
+            for e in rd.flatten() {
+                let _ = fs::rename(e.path(), dst.join(e.file_name()));
+            }
+        }
+        let _ = fs::remove_dir(&app);
+    }
+    let tmp = dst.join("tmp");
+    if tmp.is_dir() {
+        let _ = fs::rename(&tmp, dst.join("tool"));
+    }
+}
+
+fn inno_extract(archive: &Path, dst: &Path) -> Result<(), String> {
+    let status = Command::new("innoextract")
+        .arg("-s")
+        .arg("-d")
+        .arg(dst)
+        .arg(archive)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("spawn innoextract: {e}"))?;
+    if !status.success() {
+        return Err(format!("innoextract {status} (Inno version unsupported?)"));
+    }
+    hoist_inno_layout(dst);
+    if !dir_has_files(dst) {
+        return Err("innoextract produced no files".into());
     }
     Ok(())
 }
@@ -349,6 +410,21 @@ fn distill(pack: &Path, c: &Comp) -> Result<usize, String> {
     let dst = pack.join("Extracted").join(c.dst);
     fs::create_dir_all(&dst).map_err(|e| format!("mkdir {}: {e}", dst.display()))?;
 
+    // For the Inno-stream methods, innoextract (any OS, no code execution)
+    // is preferred; wine is the unix fallback.
+    if c.method != Method::SevenZ && innoextract_available() {
+        match inno_extract(&src, &dst) {
+            Ok(()) => return Ok(inf_count(&dst)),
+            Err(e) if wine_available() => {
+                warn(&format!("{}: {e} — falling back to wine", c.dst));
+                // Clear the partial attempt before the wine run repopulates.
+                let _ = fs::remove_dir_all(&dst);
+                fs::create_dir_all(&dst).map_err(|e| format!("mkdir {}: {e}", dst.display()))?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     match c.method {
         Method::SevenZ => seven_z(&src, &dst)?,
         Method::Wine => {
@@ -387,13 +463,18 @@ fn main() {
         std::process::exit(1);
     }
 
-    if !have("7z") {
-        fail("7z not found on PATH");
+    let Some(sz) = sevenz() else {
+        fail("no 7-Zip binary found on PATH (looked for 7z, 7zz, 7za)");
         std::process::exit(1);
-    }
-    let wine = have("wine");
-    if !wine {
-        warn("wine not found — wine-method components will be skipped");
+    };
+    info(&format!("using {sz}"));
+    let inno_ok = innoextract_available() || wine_available();
+    if !inno_ok {
+        warn(if cfg!(unix) {
+            "neither innoextract nor wine found — Inno-stream components will be skipped"
+        } else {
+            "innoextract not found — Inno-stream components will be skipped"
+        });
     }
 
     let mut failed = 0u32;
@@ -406,8 +487,11 @@ fn main() {
             ok(&format!("{} (already distilled)", c.dst));
             continue;
         }
-        if c.method != Method::SevenZ && !wine {
-            warn(&format!("{} skipped (needs wine)", c.dst));
+        if c.method != Method::SevenZ && !inno_ok {
+            warn(&format!(
+                "{} skipped (needs innoextract, or wine on unix)",
+                c.dst
+            ));
             skipped += 1;
             continue;
         }
@@ -425,7 +509,9 @@ fn main() {
         }
     }
 
-    let _ = fs::remove_dir_all(wine_prefix());
+    if cfg!(unix) {
+        let _ = fs::remove_dir_all(wine_prefix());
+    }
 
     if failed == 0 && skipped == 0 {
         ok(&format!(
@@ -472,6 +558,22 @@ mod tests {
                 c.file
             );
         }
+    }
+
+    #[test]
+    fn hoist_aligns_innoextract_layout() {
+        let dir = std::env::temp_dir().join("gz302ea-distill-test-hoist");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("app/drivers")).unwrap();
+        fs::write(dir.join("app/drivers/x.inf"), b"x").unwrap();
+        fs::create_dir_all(dir.join("tmp")).unwrap();
+        fs::write(dir.join("tmp/y.bat"), b"y").unwrap();
+        hoist_inno_layout(&dir);
+        assert!(dir.join("drivers/x.inf").is_file());
+        assert!(dir.join("tool/y.bat").is_file());
+        assert!(!dir.join("app").exists());
+        assert!(!dir.join("tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

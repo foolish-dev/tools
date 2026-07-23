@@ -9,13 +9,20 @@ GUI installer.
 ❯ ./target/release/gz302ea-distill [dir]   # dir = pack dir, default: CWD
 ```
 
-Needs `7z` on PATH; wine-method components additionally need `wine`
-(skipped with a warning if absent). Every ASUS package is an Inno Setup exe;
-three techniques cover all of them:
+Needs 7-Zip on PATH (any of `7z`/`7zz`/`7za`); the Inno-stream components
+additionally need `innoextract` (preferred, any OS) or `wine` (unix
+fallback) — skipped with a warning if neither is present. Installers are
+never executed natively: on Windows that would install, not extract. Every
+ASUS package is an Inno Setup exe; the techniques:
 
 - **7z overlay** — eight packages keep their payload 7z-readable in the PE
   overlay (GPU, Realtek audio, WLAN, BT, MEP, ASCI, BIOS updater, EZ Flash
   zip): extracted directly.
+- **innoextract** — when available, the remaining fourteen are unpacked from
+  the compressed Inno stream without running anything; the `{app}` payload is
+  hoisted to the component root and `{tmp}` staging becomes `tool/`, matching
+  the wine layout. If a package's Inno version is unsupported, distill falls
+  back to wine per component.
 - **wine silent install** — the rest run with
   `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=C:\payload\<comp>` in a
   throwaway prefix (`~/.cache/gz302ea-distill`, removed afterwards), payload

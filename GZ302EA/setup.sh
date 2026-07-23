@@ -24,11 +24,25 @@ trap 'printf "%s[ERR]%s line %d: %s (exit %d)\n" "$RED" "$RST" "$LINENO" "$BASH_
 REPO=https://github.com/foolish-dev/tools
 TARGET="${1:-$PWD}"
 
-for cmd in cargo 7z; do
-  command -v "$cmd" &>/dev/null || { fail "missing: $cmd (pacman -S rust 7zip)"; }
+# Package-manager-agnostic: only used to phrase the "missing dep" hints.
+PM="your package manager"
+for pm in pacman apt dnf zypper apk xbps-install brew winget; do
+  command -v "$pm" &>/dev/null && { PM=$pm; break; }
 done
+
+for cmd in git cargo; do
+  command -v "$cmd" &>/dev/null || fail "missing: $cmd (install via $PM)"
+done
+SEVENZ=""
+for z in 7z 7zz 7za; do
+  command -v "$z" &>/dev/null && { SEVENZ=$z; break; }
+done
+[[ -n "$SEVENZ" ]] || fail "missing: 7-Zip (none of 7z/7zz/7za on PATH — install 7zip/p7zip via $PM)"
 [[ $FAIL -eq 0 ]] || exit 1
-command -v wine &>/dev/null || warn "wine not found — distill will skip the wine-method components"
+
+if ! command -v innoextract &>/dev/null && ! command -v wine &>/dev/null; then
+  warn "neither innoextract nor wine found — distill will skip the Inno-stream components (innoextract via $PM fixes this on any OS)"
+fi
 
 # Use the checkout this script lives in, if any; otherwise clone/update a cache copy.
 src=""

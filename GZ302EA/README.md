@@ -5,7 +5,9 @@ Flow Z13 GZ302EA (Strix Halo). All 26 ASUS packages are pinned by the SHA-256
 hashes ASUS publishes in its support API (`SHA256SUMS`); versions current as
 of 2026-07-23.
 
-One line does it all on Arch (needs `rust` + `7zip`, `wine` for full distill):
+One line does it all on any Linux distro or macOS (needs `git` + `rust` +
+7-Zip in any flavor; `innoextract` — or `wine` on unix — for the full
+distill):
 
 ```text
 ❯ curl -fsSL https://raw.githubusercontent.com/foolish-dev/tools/main/GZ302EA/setup.sh | bash -s -- /mnt/usb
@@ -82,8 +84,9 @@ Realtek Codec Console (`9P2B8MCSVPLN`).
 ## Distilling installers → pnputil-ready INFs
 
 Every ASUS package is an Inno Setup exe; `gz302ea-distill` pulls the raw
-INF/SYS/CAT payloads out without running a single GUI installer. Two
-techniques cover all of them:
+INF/SYS/CAT payloads out without running a single GUI installer. It prefers
+`innoextract` (pure extraction, any OS — installers are never executed
+natively); without it, two techniques cover all of them on unix:
 
 - **7z overlay** — GPU, Realtek audio, WLAN, BT, MEP, ASCI v3 and the BIOS
   updater keep their payload 7z-readable: `7z x -oOUT package.exe` yields a

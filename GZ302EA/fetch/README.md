@@ -9,7 +9,7 @@ packages) from the ASUS CDN.
 ```
 
 - Pure Rust: `ureq` (rustls) + `sha2` — no curl, bash, coreutils, or system
-  TLS. Builds on stock Arch (`pacman -S rust`) and on Windows.
+  TLS. Builds anywhere stable Rust does: any distro, macOS, Windows.
 - Every file is checked against the SHA-256 ASUS publishes in its support
   API. Already-present, already-verified files are skipped — re-running is a
   verify pass. Mismatches are deleted and reported; exit is non-zero if
