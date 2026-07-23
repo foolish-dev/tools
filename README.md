@@ -14,6 +14,7 @@
 ~/tools ❯ tree -L 1
 
 .
+├── GZ302EA/  ROG Flow Z13 (2025) — Windows 11 driver pack: manifest + fetcher
 ├── z13/      GZ302EA (Strix Halo, 32 GB UMA) — setup → reboot → optimize
 └── README.md
 
@@ -39,6 +40,20 @@ ethos         each change gated on detection of already-correct state
 ```
 
 Each step is gated on detection of the already-correct state — re-running is a no-op.
+
+---
+
+### ❯ GZ302EA
+
+<sub>// same machine, other OS — offline Windows 11 driver + firmware pack</sub>
+
+**[`fetch.sh`](GZ302EA/fetch.sh)** — pull all 26 ASUS packages (~11 GB: every current driver, BIOS 311 as Windows updater + EZ Flash image, PD/keyboard/light-bar firmware tools, Armoury Crate full offline suite) from the ASUS CDN and verify each against [`SHA256SUMS`](GZ302EA/SHA256SUMS) (hashes as published by the ASUS support API). Skips whatever is already present and verified.
+
+```text
+~/tools ❯ cd /mnt/usb && ~/tools/GZ302EA/fetch.sh   # download + verify into CWD
+```
+
+[`README`](GZ302EA/README.md) covers install order, distilling the Inno installers into pnputil-ready INF trees (7z overlay / wine silent-install) for the 24H2 offline-OOBE dance, and the traps: the BIOS-capsule INF that must stay out of bulk driver sweeps, and the PD/keyboard firmware tools that are online-only downloader harnesses.
 
 ---
 
