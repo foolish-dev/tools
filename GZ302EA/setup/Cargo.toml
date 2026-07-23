@@ -1,0 +1,9 @@
+[package]
+name = "gz302ea-setup"
+version = "0.1.0"
+edition = "2021"
+description = "One-command bring-up for the GZ302EA driver pack: build the trilogy, fetch, distill, preview"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]

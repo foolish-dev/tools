@@ -5,15 +5,16 @@ Flow Z13 GZ302EA (Strix Halo). All 26 ASUS packages are pinned by the SHA-256
 hashes ASUS publishes in its support API (`SHA256SUMS`); versions current as
 of 2026-07-23.
 
-One line does it all on any Linux distro or macOS (needs `git` + `rust` +
-7-Zip in any flavor; `innoextract` — or `wine` on unix — for the full
+One command does it all on any Linux distro or macOS (needs `git` + `rust`
++ 7-Zip in any flavor; `innoextract` — or `wine` on unix — for the full
 distill):
 
 ```text
-❯ curl -fsSL https://raw.githubusercontent.com/foolish-dev/tools/main/GZ302EA/setup.sh | bash -s -- /mnt/usb
+❯ cargo install --git https://github.com/foolish-dev/tools gz302ea-setup
+❯ gz302ea-setup /mnt/usb   # target dir, default: CWD
 ```
 
-[`setup.sh`](setup.sh) builds the three Rust tools, downloads + verifies all
+[`setup/`](setup) builds the three Rust tools, downloads + verifies all
 26 packages into the target dir, distills them to pnputil-ready payloads in
 `Extracted/`, and previews the Windows install plan. Everything is
 idempotent — re-runs verify instead of re-doing.

@@ -1,0 +1,9 @@
+[package]
+name = "z13"
+version = "0.1.0"
+edition = "2021"
+description = "Setup + optimize for the ASUS ROG Flow Z13 GZ302EA on Arch Linux"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
